@@ -362,6 +362,7 @@ class Deployment {
           }
 
           self.close();
+          throw err;
           throw new Error(message);
         }
 

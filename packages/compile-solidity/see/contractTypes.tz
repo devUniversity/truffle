@@ -1,0 +1,2 @@
+Storage: sp.TRecord(value = sp.TNat)
+Params: sp.TVariant(add = sp.TRecord(x = sp.TNat, y = sp.TNat), factorial = sp.TNat, log2 = sp.TNat, multiply = sp.TRecord(x = sp.TNat, y = sp.TNat), square = sp.TNat, squareRoot = sp.TNat)
