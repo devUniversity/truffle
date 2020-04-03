@@ -1,7 +1,6 @@
 const path = require("path");
 const { exec, spawn } = require("child_process");
 const fs = require("fs");
-const async = require("async");
 const colors = require("colors");
 const minimatch = require("minimatch");
 const find_contracts = require("@truffle/contract-sources");
@@ -84,143 +83,145 @@ function checkSmartPy(callback) {
 }
 
 // Execute SmartPy-Basic for single source file
-function execSmartPy(sourcePath, entryPoint, buildDirectory, callback) {
-  // Note that the first volume parameter passed to docker needs to have a path
-  // denoted in the format of of the host filesystem. The latter volume parameter,
-  // as well as the entry point, needs to be denoted in the format of the VM.
-  // We designate the VM paths to the current working directory.
+function execSmartPy(sourcePath, entryPoint, buildDirectory) {
+  return new Promise((resolve, reject) => {
+    // Note that the first volume parameter passed to docker needs to have a path
+    // denoted in the format of of the host filesystem. The latter volume parameter,
+    // as well as the entry point, needs to be denoted in the format of the VM.
+    // We designate the VM paths to the current working directory.
 
-  // In order to make this work on all platforms, we normalize every host path
-  // (working directory, and source path). We also construct a VM internal sourch path
-  // using the normalized source path. From there, we know this constructed
-  // internal source path won't contain any "gotcha's", such as double-escaped path separators,
-  // etc. From there, we replace all backslashes with forward slashes, which is the path
-  // separator expected within the internal source.
-  const currentWorkingDirectory = path.normalize(process.cwd());
+    // In order to make this work on all platforms, we normalize every host path
+    // (working directory, and source path). We also construct a VM internal sourch path
+    // using the normalized source path. From there, we know this constructed
+    // internal source path won't contain any "gotcha's", such as double-escaped path separators,
+    // etc. From there, we replace all backslashes with forward slashes, which is the path
+    // separator expected within the internal source.
+    const currentWorkingDirectory = path.normalize(process.cwd());
 
-  const fullInternalSourcePath = path.normalize(sourcePath).replace(/\\/g, "/");
+    const fullInternalSourcePath = path
+      .normalize(sourcePath)
+      .replace(/\\/g, "/");
 
-  // remove extension from filename
-  const extension = path.extname(sourcePath);
-  const basename = path.basename(sourcePath, extension);
-  const contractName = basename;
+    // remove extension from filename
+    const extension = path.extname(sourcePath);
+    const basename = path.basename(sourcePath, extension);
+    const contractName = basename;
 
-  // Use spawn() instead of exec() here so that the OS can take care of escaping args.
-  let docker = spawn("docker", [
-    "run",
-    "-v",
-    `${currentWorkingDirectory}:${currentWorkingDirectory}`,
-    "-w",
-    `${currentWorkingDirectory}`,
-    "--rm",
-    "-i",
-    "trufflesuite/smartpy-basic:0.0.1",
-    "compile",
-    fullInternalSourcePath,
-    `${entryPoint ? entryPoint : contractName}()`,
-    buildDirectory
-  ]);
+    // Use spawn() instead of exec() here so that the OS can take care of escaping args.
+    let docker = spawn("docker", [
+      "run",
+      "-v",
+      `${currentWorkingDirectory}:${currentWorkingDirectory}`,
+      "-w",
+      `${currentWorkingDirectory}`,
+      "--rm",
+      "-i",
+      "trufflesuite/smartpy-basic:0.0.1",
+      "compile",
+      fullInternalSourcePath,
+      `${entryPoint ? entryPoint : contractName}()`,
+      buildDirectory
+    ]);
 
-  let stderr = "";
+    let stderr = "";
 
-  docker.stderr.on("data", data => {
-    stderr += data;
-  });
+    docker.stderr.on("data", data => {
+      stderr += data;
+    });
 
-  docker.on("close", code => {
-    if (code != 0 || stderr != "") {
-      return callback(
-        `${stderr}\n${colors.red(
-          `Compilation of ${sourcePath} failed. See above.`
-        )}`
-      );
-    }
+    docker.on("close", code => {
+      if (code != 0 || stderr != "") {
+        reject(
+          `${stderr}\n${colors.red(
+            `Compilation of ${sourcePath} failed. See above.`
+          )}`
+        );
+      }
 
-    callback(null, contractName);
+      resolve(contractName);
+    });
   });
 }
 
 // compile all options.paths
-function compileAll(options, callback) {
+async function compileAll(options, callback) {
+  const callbackPassed = typeof callback === "function";
   const entryPoint = options._[0] || undefined;
   options.logger = options.logger || console;
 
   compile.display(options.paths, options);
+  let contracts = [];
 
-  async.map(
-    options.paths,
-    (sourcePath, c) => {
-      execSmartPy(
+  for (const sourcePath of options.paths) {
+    let contractName;
+    try {
+      contractName = await execSmartPy(
         sourcePath,
         entryPoint,
-        options.contracts_build_directory,
-        (err, contractName) => {
-          if (err) return c(err);
-
-          const sourceBuffer = fs.readFileSync(sourcePath);
-          const sourceContents = sourceBuffer.toString();
-          let michelson;
-
-          const currentBuildDirectoryContents = fs.readdirSync(
-            options.contracts_build_directory
-          );
-          currentBuildDirectoryContents.forEach(file => {
-            const currentFilePath = `${
-              options.contracts_build_directory
-            }/${file}`;
-            if (file.includes(".py")) {
-              if (fs.existsSync(currentFilePath)) {
-                return fs.unlinkSync(currentFilePath);
-              }
-            }
-            if (file.includes(".tz.json")) {
-              const michelsonAsRawData = fs.readFileSync(currentFilePath);
-              const michelsonJson = JSON.parse(michelsonAsRawData);
-
-              // this is a HACK to workaround current @taquito/michelson-encoder limitations:
-              // the encoder currently expects the `parameter` code to be at index 0, `storage`
-              // at index 1, & `code` to be at index 2.
-              const michelsonJsonStorage = michelsonJson[0];
-              const michelsonJsonParameter = michelsonJson[1];
-              michelsonJson[0] = michelsonJsonParameter;
-              michelsonJson[1] = michelsonJsonStorage;
-              michelson = JSON.stringify(michelsonJson);
-              return fs.unlinkSync(currentFilePath);
-            }
-
-            // we might want contractStorage.tz, for now delete
-            if (file.includes(".tz")) {
-              if (fs.existsSync(currentFilePath)) {
-                return fs.unlinkSync(currentFilePath);
-              }
-            }
-          });
-
-          const contractDefinition = {
-            contractName,
-            abi: [], // TEMP!
-            sourcePath,
-            source: sourceContents,
-            michelson,
-            compiler
-          };
-
-          c(null, contractDefinition);
-        }
+        options.contracts_build_directory
       );
-    },
-    (err, contracts) => {
-      if (err) return callback(err);
-
-      const result = contracts.reduce((result, contract) => {
-        result[contract.contractName] = contract;
-
-        return result;
-      }, {});
-
-      callback(null, result, options.paths, compiler);
+    } catch (error) {
+      if (callbackPassed) return callback(error);
+      throw error;
     }
-  );
+    const sourceBuffer = fs.readFileSync(sourcePath);
+    const sourceContents = sourceBuffer.toString();
+    let michelson;
+    let initialStorage;
+
+    const currentBuildDirectoryContents = fs.readdirSync(
+      options.contracts_build_directory
+    );
+
+    currentBuildDirectoryContents.forEach(file => {
+      const currentFilePath = `${options.contracts_build_directory}/${file}`;
+      if (file.includes(".py")) {
+        return fs.unlinkSync(currentFilePath);
+      }
+      if (file.includes(".tz.json")) {
+        const michelsonAsRawData = fs.readFileSync(currentFilePath);
+        const michelsonJson = JSON.parse(michelsonAsRawData);
+
+        // this is a HACK to workaround current @taquito/michelson-encoder limitations:
+        // the encoder currently expects the `parameter` code to be at index 0, `storage`
+        // at index 1, & `code` to be at index 2.
+        const michelsonJsonStorage = michelsonJson[0];
+        const michelsonJsonParameter = michelsonJson[1];
+        michelsonJson[0] = michelsonJsonParameter;
+        michelsonJson[1] = michelsonJsonStorage;
+        michelson = JSON.stringify(michelsonJson);
+        return fs.unlinkSync(currentFilePath);
+      }
+
+      if (file.includes(".tz")) {
+        if (file === "contractStorage.tz") {
+          const initialStorageRawData = fs.readFileSync(currentFilePath);
+          initialStorage = initialStorageRawData.toString();
+        }
+        return fs.unlinkSync(currentFilePath);
+      }
+    });
+
+    const contractDefinition = {
+      contractName,
+      abi: [], // TEMP!
+      initialStorage,
+      sourcePath,
+      source: sourceContents,
+      michelson,
+      compiler
+    };
+
+    contracts.push(contractDefinition);
+  }
+
+  const result = contracts.reduce((result, contract) => {
+    result[contract.contractName] = contract;
+
+    return result;
+  }, {});
+
+  callback(null, result, options.paths, compiler);
 }
 
 // Check that SmartPy-Basic is available then forward to internal compile function
