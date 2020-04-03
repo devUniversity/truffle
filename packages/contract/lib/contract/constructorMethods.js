@@ -49,6 +49,7 @@ module.exports = Contract => ({
 
     if (tezos) {
       if (!this.michelson) {
+        console.log(this._json);
         throw new Error(
           `${
             this.contractName

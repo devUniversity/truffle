@@ -221,7 +221,8 @@ async function compileAll(options, callback) {
     return result;
   }, {});
 
-  callback(null, result, options.paths, compiler);
+  if (callbackPassed) return callback(null, result, options.paths, compiler);
+  return { result, paths: options.paths, compiler };
 }
 
 // Check that SmartPy-Basic is available then forward to internal compile function

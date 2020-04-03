@@ -43,6 +43,11 @@ describe("smartpy compiler", () => {
         );
 
         assert(
+          contract.initialStorage,
+          "Contract initial storage stored improperly, something is wrong!"
+        );
+
+        assert(
           /([parameter][storage][code]){1}/.test(contract.michelson),
           "Contract michelson stored improperly, something is wrong!"
         );
